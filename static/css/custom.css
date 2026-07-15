@@ -1,0 +1,87 @@
+/* FlowForge Custom Styles */
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background-color: #f4f6f9;
+}
+
+/* Card elevation */
+.card {
+    border: none;
+    transition: box-shadow 0.2s ease-in-out;
+}
+
+.card:hover {
+    box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.15) !important;
+}
+
+/* Navbar brand */
+.navbar-brand {
+    font-weight: 600;
+    letter-spacing: 0.5px;
+}
+
+/* Form controls */
+.form-control:focus {
+    border-color: #4a7cba;
+    box-shadow: 0 0 0 0.2rem rgba(13, 110, 253, 0.15);
+}
+
+/* Buttons */
+.btn-primary {
+    background-color: #0d6efd;
+    border-color: #0b5ed7;
+}
+
+.btn-primary:hover {
+    background-color: #0b5ed7;
+    border-color: #0a58ca;
+}
+
+/* Workflow cards on dashboard */
+.card .card-title {
+    color: #212529;
+    font-weight: 600;
+}
+
+.card .card-text {
+    font-size: 0.9rem;
+}
+
+/* Alerts */
+.alert {
+    border-radius: 0.375rem;
+}
+
+/* Footer */
+.footer {
+    position: relative;
+    bottom: 0;
+    width: 100%;
+}
+
+/* OTP input center alignment */
+.text-center .form-control {
+    text-align: center;
+    letter-spacing: 0.5em;
+    font-size: 1.25rem;
+    font-weight: bold;
+}
+
+/* File input styling */
+input[type="file"] {
+    padding: 0.375rem 0.75rem;
+}
+
+/* Download buttons */
+.list-group-item .btn-sm {
+    min-width: 130px;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    .container {
+        padding-left: 15px;
+        padding-right: 15px;
+    }
+}

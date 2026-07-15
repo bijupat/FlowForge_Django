@@ -1,0 +1,64 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}Results - {{ workflow.name }} - FlowForge{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <nav aria-label="breadcrumb">
+        <ol class="breadcrumb">
+            <li class="breadcrumb-item"><a href="{% url 'core:dashboard' %}">Dashboard</a></li>
+            <li class="breadcrumb-item"><a href="{% url 'workflows:execute' slug=workflow.slug %}">{{ workflow.name }}</a></li>
+            <li class="breadcrumb-item active" aria-current="page">Results</li>
+        </ol>
+    </nav>
+
+    <div class="card shadow-sm">
+        <div class="card-header bg-success text-white">
+            <h4 class="mb-0">Workflow Completed Successfully</h4>
+        </div>
+        <div class="card-body">
+            {% if messages %}
+                {% for message in messages %}
+                    <div class="alert alert-{{ message.tags }} alert-dismissible fade show" role="alert">
+                        {{ message }}
+                        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                    </div>
+                {% endfor %}
+            {% endif %}
+
+            <h5 class="mb-3">Generated Output Files</h5>
+
+            {% if outputs %}
+                <div class="list-group">
+                    {% for key, output in outputs.items %}
+                        <div class="list-group-item list-group-item-action d-flex justify-content-between align-items-center">
+                            <div>
+                                <strong>{{ output.label }}</strong>
+                                <br>
+                                <small class="text-muted">{{ output.filename }} ({{ output.format }})</small>
+                            </div>
+                            <a href="{% url 'workflows:download' output_key=key %}" class="btn btn-primary btn-sm">
+                                <i class="bi bi-download"></i> Download {{ output.format }}
+                            </a>
+                        </div>
+                    {% endfor %}
+                </div>
+            {% else %}
+                <div class="alert alert-warning">
+                    No output files were generated.
+                </div>
+            {% endif %}
+
+            <div class="mt-4">
+                <a href="{% url 'workflows:execute' slug=workflow.slug %}" class="btn btn-outline-primary me-2">
+                    Run Again
+                </a>
+                <a href="{% url 'core:dashboard' %}" class="btn btn-outline-secondary">
+                    Back to Dashboard
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

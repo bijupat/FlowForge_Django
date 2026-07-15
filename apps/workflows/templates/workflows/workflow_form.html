@@ -1,0 +1,130 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}{{ workflow.name }} - FlowForge{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <nav aria-label="breadcrumb">
+        <ol class="breadcrumb">
+            <li class="breadcrumb-item"><a href="{% url 'core:dashboard' %}">Dashboard</a></li>
+            <li class="breadcrumb-item active" aria-current="page">{{ workflow.name }}</li>
+        </ol>
+    </nav>
+
+    <div class="card shadow-sm">
+        <div class="card-header bg-primary text-white">
+            <h4 class="mb-0">{{ workflow.name }}</h4>
+        </div>
+        <div class="card-body">
+            {% if workflow.description %}
+                <div class="mb-4">
+                    <p class="text-muted">{{ workflow.description }}</p>
+                </div>
+            {% endif %}
+
+            {% if messages %}
+                {% for message in messages %}
+                    <div class="alert alert-{{ message.tags }} alert-dismissible fade show" role="alert">
+                        {{ message }}
+                        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                    </div>
+                {% endfor %}
+            {% endif %}
+
+            {% if form.errors and not form.non_field_errors %}
+                <div class="alert alert-danger">
+                    <strong>Please correct the errors below.</strong>
+                </div>
+            {% endif %}
+            {% if form.non_field_errors %}
+                <div class="alert alert-danger">
+                    {% for error in form.non_field_errors %}
+                        <p class="mb-0">{{ error }}</p>
+                    {% endfor %}
+                </div>
+            {% endif %}
+
+            <form method="post" enctype="multipart/form-data" novalidate>
+                {% csrf_token %}
+
+                {% for field in form %}
+                    {% with config=workflow.input_config|dictsort:'order' %}
+                        {% for c in config %}
+                            {% if c.name == field.name %}
+                                <div class="mb-3">
+                                    <label for="{{ field.id_for_label }}" class="form-label">
+                                        {{ field.label }}{% if c.required %} <span class="text-danger">*</span>{% endif %}
+                                    </label>
+
+                                    {% if c.field_type == 'file' %}
+                                        <div class="input-group">
+                                            {{ field }}
+                                        </div>
+                                        {% if c.allowed_extensions %}
+                                            <div class="form-text">
+                                                Allowed extensions: {{ c.allowed_extensions|join:", " }} (Max: {{ c.max_size_mb|default:50 }} MB)
+                                            </div>
+                                        {% endif %}
+                                        {% if c.required_columns %}
+                                            <div class="form-text">
+                                                Required columns: {{ c.required_columns|join:", " }}
+                                            </div>
+                                        {% endif %}
+                                    {% elif c.field_type == 'readonly' %}
+                                        {{ field }}
+                                    {% elif c.field_type == 'checkbox' %}
+                                        <div class="form-check">
+                                            {{ field }}
+                                            <label class="form-check-label" for="{{ field.id_for_label }}">{{ field.label }}</label>
+                                        </div>
+                                    {% else %}
+                                        {{ field }}
+                                    {% endif %}
+
+                                    {% if field.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {% for error in field.errors %}
+                                                {{ error }}
+                                            {% endfor %}
+                                        </div>
+                                    {% endif %}
+
+                                    {% if c.help_text %}
+                                        <div class="form-text">{{ c.help_text }}</div>
+                                    {% endif %}
+                                </div>
+                            {% endif %}
+                        {% endfor %}
+                    {% endwith %}
+                {% endfor %}
+
+                <div class="d-grid gap-2 mt-4">
+                    <button type="submit" class="btn btn-primary btn-lg">
+                        Process
+                    </button>
+                    <a href="{% url 'core:dashboard' %}" class="btn btn-outline-secondary">
+                        Cancel
+                    </a>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    // Client-side file size validation
+    document.querySelectorAll('input[type="file"]').forEach(input => {
+        input.addEventListener('change', function(e) {
+            const maxSizeMB = 50; // Default, would need to read from data attribute
+            const maxSize = maxSizeMB * 1024 * 1024;
+            if (this.files[0] && this.files[0].size > maxSize) {
+                alert('File exceeds maximum size of ' + maxSizeMB + ' MB.');
+                this.value = '';
+            }
+        });
+    });
+</script>
+{% endblock %}

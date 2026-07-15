@@ -1,0 +1,34 @@
+// Input configuration:
+
+[
+  {
+    "name": "sample_files",
+    "label": "Sample CSV Files",
+    "order": 1,
+    "multiple": true,
+    "required": true,
+    "help_text": "Upload one or more Alinity Sample export CSVs (hold Ctrl/Cmd to select several).",
+    "field_type": "file",
+    "max_size_mb": 50,
+    "allowed_extensions": ["csv"]
+  },
+  {
+    "name": "qc_files",
+    "label": "QC (Control) CSV Files",
+    "order": 2,
+    "multiple": true,
+    "required": true,
+    "help_text": "Upload one or more Alinity QC/control export CSVs (hold Ctrl/Cmd to select several).",
+    "field_type": "file",
+    "max_size_mb": 50,
+    "allowed_extensions": ["csv"]
+  },
+]
+  // Output configuration:
+  [
+  {
+    "name": "alinity_report",
+    "label": "Alinity Assay Summary Report",
+    "format": "csv"
+  }
+]

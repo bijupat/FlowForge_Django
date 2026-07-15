@@ -1,0 +1,59 @@
+version: '3.8'
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - DB_HOST=db
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./logs:/app/logs
+      - ./uploads:/app/uploads
+      - ./generated:/app/generated
+      - ./media:/app/media
+    restart: unless-stopped
+    networks:
+      - flowforge_network
+
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: flowforge
+      POSTGRES_USER: flowforge_user
+      POSTGRES_PASSWORD: your_db_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flowforge_user -d flowforge"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - flowforge_network
+
+  # Optional: Redis for future caching and Celery tasks
+  # redis:
+  #   image: redis:7-alpine
+  #   ports:
+  #     - "6379:6379"
+  #   restart: unless-stopped
+  #   networks:
+  #     - flowforge_network
+
+volumes:
+  postgres_data:
+
+networks:
+  flowforge_network:
+    driver: bridge

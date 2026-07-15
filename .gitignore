@@ -1,0 +1,7 @@
+.env
+venv/
+uploads/
+generated/
+__pycache__/
+migrations/
+logs/
