@@ -1,0 +1,33 @@
+// Input configuration:
+
+[
+  {
+    "name": "qc_files",
+    "order": 1,
+    "label": "QC Export CSV Files",
+    "field_type": "file",
+    "multiple": true,
+    "required": true,
+    "allowed_extensions": ["csv"],
+    "max_size_mb": 50,
+    "help_text": "Upload one or more monthly QC export CSVs."
+  },
+  {
+    "name": "batch_label",
+    "order": 2,
+    "label": "Batch/Run Label (optional)",
+    "field_type": "text",
+    "required": false,
+    "help_text": "Optional label included in the output filename."
+  }
+]
+
+  // Output configuration:
+ 
+[
+  {
+    "name": "lj_report",
+    "label": "Levey-Jennings QC Control Chart Report",
+    "format": "xlsx"
+  }
+]

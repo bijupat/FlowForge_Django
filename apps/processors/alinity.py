@@ -4,17 +4,19 @@ Alinity QC/Sample processor.
 Reads Abbott Alinity Sample and QC (control) CSV exports, cleans and
 aggregates them by assay, and writes a combined summary + detail CSV.
 
-Exposes a FlowForge-compatible `process(input_files, form_data)` entrypoint
-in addition to the original standalone CLI (`python alinity.py`).
-At bottom of file, Alinity Counts workflow database parameters are listed.
+FlowForge entrypoint: `process(input_files, form_data, output_dir)`.
 """
 import os
-import sys
-from pathlib import Path
 from typing import Dict, List, Tuple, Union
 
 import pandas as pd
 
+from apps.processors.common import (
+    build_output_filename,
+    normalize_paths,
+    read_and_concat_csvs,
+    wrap_processing_errors,
+)
 from apps.workflows.services import ProcessingError
 
 # Columns retained from the raw Alinity export before any processing.
@@ -28,6 +30,26 @@ COLUMNS_NEEDED = [
     'Control_Level',
     'Control_Lot',
 ]
+
+# Some Alinity export layouts use different raw header names for the same
+# underlying field (e.g. an LIS-style "Sample Results" export uses 'SID'
+# and 'ASSAY' where the QC-summary export uses 'Sample_ID'/'Assay_Name').
+# The first alias found on a given file wins; if the canonical name is
+# already present as-is, no renaming happens.
+COLUMN_ALIASES: Dict[str, List[str]] = {
+    'Sample_ID': ['SID'],
+    'Assay_Name': ['ASSAY'],
+    'Operator_ID': ['OPERATOR_ID'],
+    'Control_Name': ['CONTROL_NAME'],
+    'Control_Level': ['CONTROL_LEVEL'],
+    'Control_Lot': ['CONTROL_LOT'],
+}
+
+# Some export layouts report completion date and time as a single merged
+# column instead of two separate ones. Checked in order; the same
+# '%d.%m.%Y %H:%M' format is used either way since both layouts observed
+# so far share it.
+MERGED_DATETIME_ALIASES = ['DATE/TIME_COMPLETED']
 
 
 def process(input_files: Dict[str, Union[str, List[str]]], form_data: dict, output_dir: str) -> dict:
@@ -49,7 +71,10 @@ def process(input_files: Dict[str, Union[str, List[str]]], form_data: dict, outp
                 - 'sample_files': path or list of paths to Sample CSVs.
                 - 'qc_files': path or list of paths to QC/control CSVs.
         form_data: Any other form field values submitted with the workflow.
-            Not currently used by this processor.
+            An optional 'batch_label' key, if present and non-empty, is
+            sanitized and included in the generated output filename (e.g.
+            "out_alinity_SiteA_Jul_2026.csv") so runs on different input
+            files don't all download with an identical filename.
         output_dir: Directory (already created by WorkflowProcessorService)
             that the generated report must be written into. Every workflow
             processor is called with this keyword argument, since
@@ -64,15 +89,15 @@ def process(input_files: Dict[str, Union[str, List[str]]], form_data: dict, outp
         ProcessingError: If required files are missing, malformed, or
             processing otherwise fails. Raised with a user-friendly message.
     """
-    sample_paths = _normalize_paths(input_files.get('sample_files'))
-    qc_paths = _normalize_paths(input_files.get('qc_files'))
+    sample_paths = normalize_paths(input_files.get('sample_files'))
+    qc_paths = normalize_paths(input_files.get('qc_files'))
 
     if not sample_paths:
         raise ProcessingError('No Sample files were uploaded.')
     if not qc_paths:
         raise ProcessingError('No QC (control) files were uploaded.')
 
-    try:
+    with wrap_processing_errors('Alinity'):
         assaywise_df, tests_count = _build_assay_summary(
             sample_paths, drop_columns=['Operator_ID', 'Time']
         )
@@ -80,21 +105,10 @@ def process(input_files: Dict[str, Union[str, List[str]]], form_data: dict, outp
             qc_paths,
             drop_columns=['Operator_ID', 'Time', 'Control_Name', 'Control_Level', 'Control_Lot'],
         )
-    except KeyError as exc:
-        raise ProcessingError(
-            f'Uploaded file is missing an expected column: {exc}. '
-            'Please check the file matches the Alinity export format.'
-        ) from exc
-    except ValueError as exc:
-        raise ProcessingError(
-            f'Could not parse date/time values in the uploaded file: {exc}'
-        ) from exc
-    except Exception as exc:  # noqa: BLE001 - surface any other failure cleanly
-        raise ProcessingError(f'Failed to process Alinity files: {exc}') from exc
 
     start_time = assaywise_df['Time'].iloc[0]
 
-    output_filename = f"out_alinity_{start_time.strftime('%b')}_{start_time.strftime('%Y')}.csv"
+    output_filename = build_output_filename('alinity', form_data, start_time)
     output_path = os.path.join(output_dir, output_filename)
 
     # Write summary counts first, then detailed assay-wise rows for both groups.
@@ -106,116 +120,94 @@ def process(input_files: Dict[str, Union[str, List[str]]], form_data: dict, outp
     return {'alinity_report': output_path}
 
 
-def _normalize_paths(value: Union[str, List[str], None]) -> List[str]:
-    """
-    Normalize a single path, list of paths, or None into a list of strings.
-
-    Args:
-        value: A file path, list of file paths, or None.
-
-    Returns:
-        A list of file path strings (empty if value was falsy).
-    """
-    if not value:
-        return []
-    if isinstance(value, (list, tuple)):
-        return [str(path) for path in value]
-    return [str(value)]
-
-
 def _build_assay_summary(
     file_paths: List[str], drop_columns: List[str]
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Read, clean, and aggregate a group of Alinity CSV files by assay.
 
+    Tolerates two export layout differences seen in practice:
+        - Alternate raw column names for the same field (see
+          COLUMN_ALIASES), e.g. 'SID' instead of 'Sample_ID'.
+        - Completion date and time as either two separate columns
+          (Date_of_Completion + Time_of_Completion) or a single merged
+          column (see MERGED_DATETIME_ALIASES).
+
     Args:
         file_paths: CSV file paths to concatenate and clean.
         drop_columns: Columns to exclude before computing per-assay counts
-            (e.g. non-QC files drop fewer columns than QC files).
+            (e.g. non-QC files drop fewer columns than QC files). Any
+            column in this list that isn't present is silently skipped,
+            since some export layouts (e.g. Sample-only LIS exports) don't
+            have Control_Name/Control_Level/Control_Lot at all.
 
     Returns:
         Tuple of (assaywise_df, tests_count):
             - assaywise_df: cleaned, sorted rows with a combined Time column.
             - tests_count: per-assay row counts after dropping drop_columns.
     """
-    dfs = (pd.read_csv(path, low_memory=False) for path in file_paths)
-    df = pd.concat(dfs, ignore_index=True)
-    df.columns = df.columns.str.strip().str.replace(' ', '_')
+    df = read_and_concat_csvs(file_paths)
+    df = _canonicalize_columns(df)
 
     cleaned_df = df.filter(items=COLUMNS_NEEDED)
-    cleaned_df['Time'] = (
-        cleaned_df['Date_of_Completion'].astype(str) + ' ' + cleaned_df['Time_of_Completion']
-    )
-    cleaned_df['Time'] = pd.to_datetime(cleaned_df['Time'], format='%d.%m.%Y %H:%M')
-    cleaned_df.drop(columns=['Date_of_Completion', 'Time_of_Completion'], inplace=True)
+    cleaned_df['Time'] = _resolve_completion_time(df)
+    cleaned_df = cleaned_df.drop(columns=['Date_of_Completion', 'Time_of_Completion'], errors='ignore')
 
     assaywise_df = cleaned_df.sort_values(by=['Assay_Name', 'Time'], ignore_index=True)
-    tests_count = assaywise_df.drop(columns=drop_columns).groupby('Assay_Name').count()
+    tests_count = assaywise_df.drop(columns=drop_columns, errors='ignore').groupby('Assay_Name').count()
 
     return assaywise_df, tests_count
 
 
-# ---------------------------------------------------------------------------
-# Legacy standalone CLI usage (unchanged behavior): `python alinity.py`
-# ---------------------------------------------------------------------------
+def _canonicalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Rename known alternate raw column names to the canonical names this
+    processor expects (see COLUMN_ALIASES), so exports using a different
+    naming convention for the same field still work.
 
-def main():
-    qcs, samples = get_files_from_dir(input("Enter Root folder Name : "))
-    print("QC Files : ")
-    for qc in qcs:
-        print(qc)
-    print("Sample Files : ")
-    for sample in samples:
-        print(sample)
+    Args:
+        df: The raw (post header-cleaning) DataFrame.
 
-    assaywise_df, tests_count = _build_assay_summary(
-        samples, drop_columns=['Operator_ID', 'Time']
-    )
-    assaywise_df_c, tests_count_c = _build_assay_summary(
-        qcs,
-        drop_columns=['Operator_ID', 'Time', 'Control_Name', 'Control_Level', 'Control_Lot'],
-    )
-
-    start_time = assaywise_df["Time"][0]
-    end_time = assaywise_df.iloc[-1]['Time']
-    print(f'Alinity test datas from {start_time} to {end_time}')
-
-    output_path = f'./{start_time.strftime("%b")}{start_time.strftime("%Y")}/out_alinity_{start_time.strftime("%b")}_{start_time.strftime("%Y")}.csv'
-    output_dir = os.path.dirname(output_path)
-    os.makedirs(output_dir, exist_ok=True)
-
-    tests_count.to_csv(output_path, mode='a')
-    tests_count_c.to_csv(output_path, mode='a')
-    assaywise_df.to_csv(output_path, mode='a', index=False)
-    assaywise_df_c.to_csv(output_path, mode='a', index=False)
-    print(tests_count)
-    print(tests_count_c)
+    Returns:
+        The DataFrame with any recognized alias columns renamed to their
+        canonical name. Unrecognized columns are left untouched.
+    """
+    rename_map = {}
+    for canonical, aliases in COLUMN_ALIASES.items():
+        if canonical in df.columns:
+            continue
+        for alias in aliases:
+            if alias in df.columns:
+                rename_map[alias] = canonical
+                break
+    return df.rename(columns=rename_map) if rename_map else df
 
 
-def get_files_from_dir(dir):
-    path = Path(os.path.join(os.getcwd(), dir, "alinity", "qc"))
-    qcs = list(path.glob("*.csv"))
-    path = Path(os.path.join(os.getcwd(), dir, "alinity", "sample"))
-    samples = list(path.glob("*.csv"))
-    if not qcs:
-        sys.exit("QC files not found !!")
-    elif not samples:
-        sys.exit("Sample files not found !!")
-    else:
-        return qcs, samples
+def _resolve_completion_time(df: pd.DataFrame) -> pd.Series:
+    """
+    Build the completion Time column, supporting both a two-column export
+    layout (Date_of_Completion + Time_of_Completion) and a single merged
+    column layout (see MERGED_DATETIME_ALIASES).
 
+    Args:
+        df: DataFrame after column-header cleaning and alias canonicalization
+            (i.e. before filtering down to COLUMNS_NEEDED, so a
+            merged-datetime column that isn't in COLUMNS_NEEDED is still
+            present to check for).
 
-if __name__ == "__main__":
-    main()
+    Returns:
+        A parsed datetime Series, same length and index as df.
 
+    Raises:
+        KeyError: If neither the two-column nor merged-column layout's
+            expected column(s) are present.
+    """
+    if 'Date_of_Completion' in df.columns and 'Time_of_Completion' in df.columns:
+        combined = df['Date_of_Completion'].astype(str) + ' ' + df['Time_of_Completion'].astype(str)
+        return pd.to_datetime(combined, format='%d.%m.%Y %H:%M')
 
-"""
-in database in workflows/workflow table add following if new database
-Name : Alinity Counts
-Description : Test and QC counts and details for Alinity
-Form Configuration : [{"name": "sample_files", "label": "Sample CSV Files", "order": 1, "multiple": true, "required": true, "help_text": "Upload one or more Alinity Sample export CSVs (hold Ctrl/Cmd to select several).", "field_type": "file", "max_size_mb": 50, "allowed_extensions": ["csv"]}, {"name": "qc_files", "label": "QC (Control) CSV Files", "order": 2, "multiple": true, "required": true, "help_text": "Upload one or more Alinity QC/control export CSVs (hold Ctrl/Cmd to select several).", "field_type": "file", "max_size_mb": 50, "allowed_extensions": ["csv"]}]
-Processor module:processors.alinity
-Processor function:process
-Output configuration: [{"name": "alinity_report", "label": "Alinity Assay Summary Report", "format": "csv"}]
-"""
+    for alias in MERGED_DATETIME_ALIASES:
+        if alias in df.columns:
+            return pd.to_datetime(df[alias].astype(str), format='%d.%m.%Y %H:%M')
+
+    raise KeyError("'Date_of_Completion'/'Time_of_Completion' (or a merged completion date/time column)")

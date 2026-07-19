@@ -1,30 +1,33 @@
 // Input configuration:
 
-
-
 [
   {
     "name": "xn_files",
-    "label": "XN-1000 Export CSV Files",
+    "label": "SYSMEX XN Export CSV Files",
     "order": 1,
     "multiple": true,
     "required": true,
-    "help_text": "Upload one or more Sysmex XN-1000 export CSVs (hold Ctrl/Cmd to select several).",
+    "help_text": "Upload one or more Sysmex XN export CSVs (hold Ctrl/Cmd to select several).",
     "field_type": "file",
     "max_size_mb": 50,
     "allowed_extensions": ["csv"]
+  },
+  {
+    "name": "batch_label",
+    "order": 2,
+    "label": "Batch/Run Label (optional)",
+    "field_type": "text",
+    "required": false,
+    "help_text": "Optional short label (e.g. site name or batch number) to include in the output filename."
   }
 ]
-
-
-
 
   // Output configuration:
  
 [
   {
     "name": "xn_report",
-    "label": "XN-1000 Classified Summary Report",
+    "label": "Sysmex XN Classified Summary Report",
     "format": "csv"
   }
 ]

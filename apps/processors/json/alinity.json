@@ -7,7 +7,7 @@
     "order": 1,
     "multiple": true,
     "required": true,
-    "help_text": "Upload one or more Alinity Sample export CSVs (hold Ctrl/Cmd to select several).",
+    "help_text": "Upload one or more Abbot Alinity/Architect Sample CSVs (hold Ctrl/Cmd to select several).",
     "field_type": "file",
     "max_size_mb": 50,
     "allowed_extensions": ["csv"]
@@ -18,12 +18,21 @@
     "order": 2,
     "multiple": true,
     "required": true,
-    "help_text": "Upload one or more Alinity QC/control export CSVs (hold Ctrl/Cmd to select several).",
+    "help_text": "Upload one or more Abbot Alinity/Architect QC CSVs (hold Ctrl/Cmd to select several).",
     "field_type": "file",
     "max_size_mb": 50,
     "allowed_extensions": ["csv"]
   },
+  {
+    "name": "batch_label",
+    "order": 3,
+    "label": "Batch/Run Label (optional)",
+    "field_type": "text",
+    "required": false,
+    "help_text": "Optional short label (e.g. site name or batch number) to include in the output filename."
+  }
 ]
+
   // Output configuration:
   [
   {

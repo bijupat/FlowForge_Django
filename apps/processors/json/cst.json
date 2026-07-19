@@ -1,0 +1,48 @@
+// Input configuration:
+[
+  {
+    "name": "cs2500_files",
+    "order": 1,
+    "label": "CS-2500 Export CSV Files",
+    "field_type": "file",
+    "multiple": true,
+    "required": true,
+    "allowed_extensions": ["csv"],
+    "max_size_mb": 50,
+    "help_text": "Upload one or more Sysmex CS-2500 export CSVs (hold Ctrl/Cmd to select several)."
+  },
+  {
+    "name": "start_date",
+    "order": 2,
+    "label": "Start Date (inclusive)",
+    "field_type": "date",
+    "required": true,
+    "help_text": "Samples on or after this date are included."
+  },
+  {
+    "name": "end_date",
+    "order": 3,
+    "label": "End Date (exclusive)",
+    "field_type": "date",
+    "required": true,
+    "help_text": "Samples before this date are included — pick the day AFTER the last day you want, e.g. enter June 1 to include all of May."
+  },
+  {
+    "name": "batch_label",
+    "order": 4,
+    "label": "Batch/Run Label (optional)",
+    "field_type": "text",
+    "required": false,
+    "help_text": "Optional short label (e.g. site name) to include in the output filename."
+  }
+]
+
+  // Output configuration:
+
+  [
+  {
+    "name": "cs2500_report",
+    "label": "CS-2500 Coagulation Assay Report",
+    "format": "csv"
+  }
+]
