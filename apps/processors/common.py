@@ -2,10 +2,11 @@
 Shared utilities for FlowForge processor modules (apps/processors/*.py).
 
 Extracts patterns repeated across processors: normalizing form-field file
-path(s), reading+concatenating CSVs with cleaned column headers, wrapping
-a processor's data-cleaning logic so common failure types surface as a
-user-friendly ProcessingError instead of a raw traceback, and sanitizing
-an optional user-supplied label for inclusion in output filenames.
+path(s), reading+concatenating CSVs/Excels with cleaned column headers,
+wrapping a processor's data-cleaning logic so common failure types
+surface as a user-friendly ProcessingError instead of a raw traceback,
+and sanitizing an optional user-supplied label for inclusion in output
+filenames.
 """
 import re
 from contextlib import contextmanager
@@ -54,6 +55,35 @@ def read_and_concat_csvs(file_paths: List[str]) -> pd.DataFrame:
         etc.
     """
     dfs = (pd.read_csv(path, low_memory=False) for path in file_paths)
+    df = pd.concat(dfs, ignore_index=True)
+    df.columns = df.columns.str.strip().str.replace(' ', '_')
+    return df
+
+
+def read_and_concat_excels(file_paths: List[str], header: int = 0) -> pd.DataFrame:
+    """
+    Read one or more Excel files and concatenate them into a single
+    DataFrame, with column headers normalized (whitespace stripped,
+    internal spaces replaced with underscores).
+
+    Mirrors read_and_concat_csvs() for processors whose source files are
+    .xlsx exports rather than .csv - e.g. a report export with several
+    metadata rows above the real table header, where `header` gives the
+    0-indexed row the actual column names start on.
+
+    Args:
+        file_paths: Excel file paths to read and concatenate.
+        header: 0-indexed row number the real column headers start on.
+            Defaults to 0 (headers on the first row), but many report-style
+            exports have several metadata rows above the real header row.
+
+    Returns:
+        The concatenated DataFrame with cleaned column headers. Row order
+        follows file_paths order; no other cleaning or filtering is done -
+        callers still handle their own column selection, dtype casting,
+        etc.
+    """
+    dfs = (pd.read_excel(path, header=header) for path in file_paths)
     df = pd.concat(dfs, ignore_index=True)
     df.columns = df.columns.str.strip().str.replace(' ', '_')
     return df

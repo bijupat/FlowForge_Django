@@ -1,0 +1,33 @@
+// Input configuration:
+
+[
+  {
+    "name": "register_files",
+    "label": "Report Register Excel Files",
+    "order": 1,
+    "multiple": true,
+    "required": true,
+    "help_text": "Upload one or more Report Register .xlsx exports (hold Ctrl/Cmd to select several).",
+    "field_type": "file",
+    "max_size_mb": 50,
+    "allowed_extensions": ["xlsx"]
+  },
+  {
+    "name": "batch_label",
+    "label": "Batch/Run Label (optional)",
+    "order": 2,
+    "field_type": "text",
+    "required": false,
+    "help_text": "Optional short label (e.g. ward name or batch number) to include in the output filename."
+  }
+]
+
+  // Output configuration:
+
+[
+  {
+    "name": "mdro_report",
+    "label": "MDRO Register Summary Report",
+    "format": "xlsx"
+  }
+]

@@ -1,0 +1,18 @@
+[
+  {
+    "Parameter": "HIGH SENSITIVE TROPONINE I QUANTITATION",
+    "Assay Name": "hsTnI STAT"
+  },
+  {
+    "Parameter": "S.Sodium  ( NA )",
+    "Assay Name": "Na-C"
+  },
+  {
+    "Parameter": "S.Potassium (K)",
+    "Assay Name": "K-C"
+  },
+  {
+    "Parameter": "Albumin (ALB)",
+    "Assay Name": "AlbBCG2"
+  }
+]

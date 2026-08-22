@@ -26,6 +26,15 @@ from apps.workflows.services import ProcessingError
 COLUMNS_NEEDED = ['Sample_No.', 'Date', 'Time', 'RET%(%)', 'NEUT%(%)', 'Error(Func.)']
 FINAL_COLUMNS_NEEDED = ['Sample_No.', 'DateTime', 'Test']
 
+# Raw Date+Time formats seen across different XN-1000 export
+# configurations, tried in order for each row independently (not per
+# file) so a batch mixing files from both export configurations still
+# parses correctly.
+DATETIME_FORMATS = [
+    '%d-%m-%Y %H:%M:%S',  # e.g. "22-03-2026 02:43:00"
+    '%Y/%m/%d %H:%M:%S',  # e.g. "2026/07/01 22:25:22"
+]
+
 
 def process(input_files: Dict[str, Union[str, List[str]]], form_data: dict, output_dir: str) -> dict:
     """
@@ -98,6 +107,52 @@ def process(input_files: Dict[str, Union[str, List[str]]], form_data: dict, outp
     return {'xn_report': output_path}
 
 
+def _parse_datetime(combined: pd.Series) -> pd.Series:
+    """
+    Parse a combined "Date Time" string column into datetimes, tolerating
+    more than one raw export format (see DATETIME_FORMATS).
+
+    Each format is tried in turn against whatever rows haven't parsed yet,
+    so a single batch mixing files from different export configurations
+    (e.g. one XN-1000 file using 'DD-MM-YYYY' dates and another using
+    'YYYY/MM/DD' dates) still parses every row correctly - this is
+    per-row, not per-file, since nothing about a merged CSV batch
+    guarantees one format per file boundary either.
+
+    Args:
+        combined: A Series of "Date Time" strings, e.g. "22-03-2026 02:43:00"
+            or "2026/07/01 22:25:22".
+
+    Returns:
+        A parsed datetime Series, same length and index as combined.
+
+    Raises:
+        ValueError: If any row doesn't match any of DATETIME_FORMATS,
+            naming a sample of the unparseable raw values so the message
+            is actionable rather than a generic pandas error.
+    """
+    result = pd.Series(pd.NaT, index=combined.index, dtype='datetime64[ns]')
+    remaining_mask = pd.Series(True, index=combined.index)
+
+    for fmt in DATETIME_FORMATS:
+        if not remaining_mask.any():
+            break
+        parsed = pd.to_datetime(combined[remaining_mask], format=fmt, errors='coerce')
+        newly_parsed = parsed.notna()
+        result.loc[parsed.index[newly_parsed]] = parsed[newly_parsed]
+        remaining_mask.loc[parsed.index[newly_parsed]] = False
+
+    if remaining_mask.any():
+        bad_samples = combined[remaining_mask].unique()[:5]
+        raise ValueError(
+            "Unrecognized Date/Time format in "
+            f"{int(remaining_mask.sum())} row(s), e.g.: {list(bad_samples)}. "
+            f"Expected one of: {DATETIME_FORMATS}."
+        )
+
+    return result
+
+
 def _load_and_clean(file_paths: List[str]) -> pd.DataFrame:
     """
     Read, concatenate, and clean a group of XN-1000 CSV files.
@@ -116,8 +171,8 @@ def _load_and_clean(file_paths: List[str]) -> pd.DataFrame:
     # letters) rather than text, which would break the .str accessor calls
     # below and in _classify_samples's BACKGROUNDCHECK check.
     cleaned_df['Sample_No.'] = cleaned_df['Sample_No.'].astype(str)
-    cleaned_df['DateTime'] = cleaned_df['Date'].astype(str) + ' ' + cleaned_df['Time']
-    cleaned_df['DateTime'] = pd.to_datetime(cleaned_df['DateTime'], format='%d-%m-%Y %H:%M:%S')
+    combined = cleaned_df['Date'].astype(str) + ' ' + cleaned_df['Time'].astype(str)
+    cleaned_df['DateTime'] = _parse_datetime(combined)
     cleaned_df = cleaned_df.drop(columns=['Date', 'Time'])
 
     # Drop error samples. na=False guards against a NaN Sample_No. raising

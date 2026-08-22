@@ -18,12 +18,16 @@ markers (there being only one point, no line can be drawn).
 FlowForge entrypoint: `process(input_files, form_data, output_dir)`.
 """
 import re
+from datetime import datetime
 from typing import Dict, List, Tuple, Union
 
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.chart import ScatterChart, Series, Reference
+from openpyxl.chart.legend import LegendEntry
 from openpyxl.chart.marker import Marker
+from openpyxl.chart.text import RichText
+from openpyxl.drawing.text import RichTextProperties
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 
@@ -42,6 +46,7 @@ COLUMN_ALIASES: Dict[str, List[str]] = {
     'Control_Name': ['CONTROL_NAME'],
     'Control_Level': ['CONTROL_LEVEL'],
     'Control_Lot': ['CONTROL_LOT'],
+    'Control_Lot_Expiration': ['CONTROL_LOT_EXPIRATION', 'CONTROL_LOT_EXP'],
 }
 MERGED_DATETIME_ALIASES = ['DATE/TIME_COMPLETED']
 
@@ -51,17 +56,19 @@ MERGED_DATETIME_ALIASES = ['DATE/TIME_COMPLETED']
 # requirement that generated workbooks recalculate from their own data
 # rather than ship hardcoded results.
 HEADERS = [
-    'Assay', 'Control_Name', 'Control_Level', 'Control_Lot', 'DateTime',
+    'Assay', 'Control_Name', 'Control_Level', 'Control_Lot',
+    'Control_Lot_Expiry', 'Lot_Expiry_Quality', 'DateTime',
     'Result_Raw', 'Result_Value', 'Result_Value_Squared', 'Result_Unit',
     'Control_Range_Raw', 'Range_Low', 'Range_High', 'Range_Quality',
     'Segment_Id', 'Segment_N', 'Segment_Mean', 'Segment_SumSq', 'Segment_SD',
     'Limit_Type', 'Stat_Center', 'Stat_Upper1', 'Stat_Lower1', 'Stat_Upper2',
     'Stat_Lower2', 'Stat_Upper3', 'Stat_Lower3',
     'RangeFallback_Center', 'RangeFallback_Upper', 'RangeFallback_Lower',
+    'Group_N', 'Group_Mean', 'Group_SumSq', 'Group_SD', 'Group_CV',
 ]
 COL = {name: i + 1 for i, name in enumerate(HEADERS)}
 
-CHART_HEIGHT_ROWS = 16
+CHART_HEIGHT_ROWS = 21
 
 # (column, legend label, color, line width in points, marker symbol, marker size)
 # marker_symbol='none' -> drawn as a line (segment has >=2 points).
@@ -165,29 +172,72 @@ def _parse_result(raw) -> Tuple[Union[float, None], Union[str, None]]:
 
 
 def _parse_range(raw) -> Tuple[Union[float, None], Union[float, None]]:
-    """Parse a 'low - high' CONTROL RANGE string into (low, high). Returns (None, None) if unparseable."""
-    m = re.match(r'^(-?\d+\.?\d*)\s*-\s*(-?\d+\.?\d*)$', str(raw).strip())
+    """
+    Parse a 'low - high' or 'low - high UNIT' CONTROL RANGE string into
+    (low, high). The unit suffix (e.g. 'mg/dL', 'U/L', '%', 'IU/mL') is
+    optional and discarded if present. Returns (None, None) if unparseable.
+    """
+    m = re.match(r'^(-?\d+\.?\d*)\s*-\s*(-?\d+\.?\d*)\s*(?:[A-Za-z%/].*)?$', str(raw).strip())
     if not m:
         return None, None
     return float(m.group(1)), float(m.group(2))
 
 
+# Formats tried in order against the 'Control Lot Expiration' column. This
+# is unverified against a real sample as of this writing - if real data
+# uses a format not listed here, add it rather than assume one blindly.
+EXPIRY_DATE_FORMATS = ['%d.%m.%Y', '%d/%m/%Y', '%Y-%m-%d', '%d-%m-%Y']
+
+
+def _parse_expiry(raw) -> Union[datetime, None]:
+    """
+    Parse a Control Lot Expiration date string. Tries each format in
+    EXPIRY_DATE_FORMATS in turn. Returns None (rather than raising) for a
+    blank value or one that doesn't match any known format, so a single
+    malformed expiry date doesn't fail the whole batch - it's flagged via
+    Lot_Expiry_Quality on the Data sheet instead, the same way an
+    unparseable CONTROL RANGE is flagged via Range_Quality.
+    """
+    s = str(raw).strip()
+    if not s or s.lower() in ('nan', 'none', 'nat', ''):
+        return None
+    for fmt in EXPIRY_DATE_FORMATS:
+        try:
+            return datetime.strptime(s, fmt)
+        except ValueError:
+            continue
+    return None
+
+
 def _assign_segments(group: pd.DataFrame) -> pd.Series:
     """
     Assign a 1-based Segment_Id within a single (Assay, Control_Name,
-    Control_Level) group, incrementing whenever Control_Range_Raw differs
-    from the immediately preceding row. Assumes group is already sorted
-    chronologically by DateTime.
+    Control_Level) group, incrementing whenever the *parsed numeric*
+    control range differs from the immediately preceding row. Assumes
+    group is already sorted chronologically by DateTime.
+
+    Comparing the parsed (Range_Low, Range_High) pair rather than the raw
+    CONTROL_RANGE string means harmless formatting differences (e.g.
+    '92 - 124' vs '92-124' vs '92  - 124', all seen across real exports)
+    don't spuriously split one continuous segment into many - only a
+    genuine change in the numeric range does. Rows whose range didn't
+    parse at all fall back to comparing the raw string instead, since
+    there's no numeric value to compare there.
     """
+    def _key(row):
+        if pd.notna(row['Range_Low']) and pd.notna(row['Range_High']):
+            return (row['Range_Low'], row['Range_High'])
+        return row['Control_Range_Raw']
+
     seg_id = 1
     ids = [seg_id]
-    prev_range = group['Control_Range_Raw'].iloc[0]
+    prev_key = _key(group.iloc[0])
     for i in range(1, len(group)):
-        cur_range = group['Control_Range_Raw'].iloc[i]
-        if cur_range != prev_range:
+        cur_key = _key(group.iloc[i])
+        if cur_key != prev_key:
             seg_id += 1
         ids.append(seg_id)
-        prev_range = cur_range
+        prev_key = cur_key
     return pd.Series(ids, index=group.index)
 
 
@@ -217,11 +267,30 @@ def _load_and_prepare(file_paths: List[str]) -> pd.DataFrame:
         lambda v: 'OK' if pd.notna(v) else 'Unparseable - verify original export'
     )
 
+    if 'Control_Lot_Expiration' in df.columns:
+        df['Control_Lot_Expiry'] = df['Control_Lot_Expiration'].apply(_parse_expiry)
+        df['Lot_Expiry_Quality'] = df['Control_Lot_Expiry'].apply(
+            lambda v: 'OK' if pd.notna(v) else 'Unparseable - verify original export'
+        )
+    else:
+        # Column genuinely absent from this upload - degrade gracefully
+        # rather than fail the whole report over an optional field.
+        df['Control_Lot_Expiry'] = pd.NaT
+        df['Lot_Expiry_Quality'] = 'Column not found in upload'
+
     df = df.dropna(subset=['Result_Value'])
     df = df.sort_values(['Assay_Name', 'Control_Name', 'Control_Level', 'DateTime'], ignore_index=True)
-    df['Segment_Id'] = df.groupby(
-        ['Assay_Name', 'Control_Name', 'Control_Level'], group_keys=False
-    ).apply(_assign_segments)
+
+    # Built by explicit per-group concatenation rather than
+    # groupby(...).apply(...) directly: apply()'s return-shape detection
+    # is ambiguous when there's exactly one group in the whole file (a
+    # real possibility for a narrow QC export), and can raise instead of
+    # returning the per-row Series we want.
+    segment_parts = [
+        _assign_segments(group)
+        for _, group in df.groupby(['Assay_Name', 'Control_Name', 'Control_Level'], sort=False)
+    ]
+    df['Segment_Id'] = pd.concat(segment_parts).reindex(df.index)
 
     return df
 
@@ -267,6 +336,13 @@ def _write_data_sheet(ws, df: pd.DataFrame) -> int:
         ws.cell(i, COL['Control_Name'], row.Control_Name)
         ws.cell(i, COL['Control_Level'], row.Control_Level)
         ws.cell(i, COL['Control_Lot'], row.Control_Lot)
+        expiry_value = row.Control_Lot_Expiry if pd.notna(row.Control_Lot_Expiry) else None
+        expiry_cell = ws.cell(i, COL['Control_Lot_Expiry'], expiry_value)
+        if expiry_value is not None:
+            expiry_cell.number_format = 'dd/mm/yyyy'
+        leq_cell = ws.cell(i, COL['Lot_Expiry_Quality'], row.Lot_Expiry_Quality)
+        if row.Lot_Expiry_Quality != 'OK':
+            leq_cell.fill = PatternFill(start_color='FFF3CD', end_color='FFF3CD', fill_type='solid')
         dt_cell = ws.cell(i, COL['DateTime'], row.DateTime)
         dt_cell.number_format = 'yyyy-mm-dd hh:mm'
         ws.cell(i, COL['Result_Raw'], row.Result)
@@ -322,8 +398,62 @@ def _write_data_sheet(ws, df: pd.DataFrame) -> int:
         ws.cell(i, COL['RangeFallback_Upper'], f'=IF(OR({n_c}>=2,{rq_c}<>"OK"),"",{high_c})')
         ws.cell(i, COL['RangeFallback_Lower'], f'=IF(OR({n_c}>=2,{rq_c}<>"OK"),"",{low_c})')
 
+        group_crit = f'{rng("Assay")},{a}{i},{rng("Control_Name")},{b}{i},{rng("Control_Level")},{c}{i}'
+        ws.cell(i, COL['Group_N'], f'=COUNTIFS({group_crit})')
+        ws.cell(i, COL['Group_Mean'], f'=AVERAGEIFS({rng("Result_Value")},{group_crit})')
+        ws.cell(i, COL['Group_SumSq'], f'=SUMIFS({rng("Result_Value_Squared")},{group_crit})')
+
+        gn_c = f'{get_column_letter(COL["Group_N"])}{i}'
+        gmean_c = f'{get_column_letter(COL["Group_Mean"])}{i}'
+        gsumsq_c = f'{get_column_letter(COL["Group_SumSq"])}{i}'
+        gsd_c = f'{get_column_letter(COL["Group_SD"])}{i}'
+        ws.cell(i, COL['Group_SD'], f'=IF({gn_c}<2,"",SQRT(({gsumsq_c}-({gmean_c}^2)*{gn_c})/({gn_c}-1)))')
+        ws.cell(i, COL['Group_CV'], f'=IF(OR({gn_c}<2,{gmean_c}=0),"",{gsd_c}/{gmean_c}*100)')
+
     ws.freeze_panes = 'A2'
     return last_row
+
+
+def _write_chart_header(ws, anchor_row: int, group_label: str, summary: str, lot_summary: str) -> None:
+    """
+    Write three styled, merged header rows directly above a chart's
+    position, instead of using the chart's own native title.
+
+    A native openpyxl chart title built from multiple rich-text runs/
+    paragraphs (as this used to do) gets flattened by LibreOffice into a
+    single run using only the first run's formatting - confirmed by
+    direct testing, and true regardless of whether the runs are split
+    across paragraphs or joined by explicit line breaks within one
+    paragraph. Since this environment's charts must render correctly in
+    LibreOffice (not just Excel), the differently-sized/colored lines are
+    written as plain worksheet cells instead - regular per-cell font
+    formatting survives a LibreOffice round-trip correctly.
+
+    Args:
+        ws: The worksheet to write the header onto (the Charts sheet).
+        anchor_row: Row to place the first (heading) line at. The chart
+            itself should be anchored a few rows below this - see
+            HEADER_ROWS_RESERVED.
+        group_label: Heading line, e.g. "GluC | RANDOX C2 | Level 2".
+        summary: Second line, from _compute_group_summary().
+        lot_summary: Third line, from _compute_lot_summary().
+    """
+    lines = [
+        (group_label, 18, True, '000000', 26),
+        (summary, 11, False, '595959', 16),
+        (lot_summary, 10, False, '595959', 15),
+    ]
+    for offset, (text, size, bold, color, row_height) in enumerate(lines):
+        row = anchor_row + offset
+        cell = ws.cell(row, 1, text)
+        cell.font = Font(size=size, bold=bold, color=color)
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=10)
+        ws.row_dimensions[row].height = row_height
+
+
+# Header rows reserved above each chart (heading + summary + lot lines),
+# before the chart itself is anchored.
+HEADER_ROWS_RESERVED = 4
 
 
 def _compute_y_axis_bounds(gdf: pd.DataFrame) -> Tuple[float, float]:
@@ -406,13 +536,82 @@ def _write_charts_sheet(charts_ws, data_ws, df: pd.DataFrame) -> None:
             segments.append((s_start, s_end, seg_n, range_ok))
         label = f'{assay} | {cname} | {level}'
         y_min, y_max = _compute_y_axis_bounds(gdf)
-        anchor = _add_group_chart(charts_ws, data_ws, anchor, label, g_start, g_end, segments, y_min, y_max)
+        summary = _compute_group_summary(gdf)
+        lot_summary = _compute_lot_summary(gdf)
+        anchor = _add_group_chart(
+            charts_ws, data_ws, anchor, label, g_start, g_end, segments, y_min, y_max, summary, lot_summary
+        )
+
+
+def _compute_lot_summary(gdf: pd.DataFrame) -> str:
+    """
+    Build the "Lot: XXXX (exp dd/mm/yyyy), YYYY (exp dd/mm/yyyy)" line
+    shown as a third chart-title line, listing every distinct
+    (Control_Lot, Control_Lot_Expiry) pair seen anywhere in the group -
+    not just the most recent one, since a chart commonly spans more than
+    one lot (e.g. across a segment boundary).
+
+    If the same lot number appears with more than one different expiry
+    date (a real data-entry inconsistency, not expected for one physical
+    lot), both are listed rather than silently picking one - this should
+    be treated as a data-quality signal to check, similar to how a
+    corrupted CONTROL RANGE gets flagged rather than guessed at.
+
+    Args:
+        gdf: The rows for a single (Assay, Control_Name, Control_Level)
+            group (a slice of the full prepared DataFrame).
+
+    Returns:
+        A one-line string, e.g. "Lot: 1439UE (exp 15/03/2026), 1713UN (exp 22/08/2026)".
+    """
+    pairs = gdf[['Control_Lot', 'Control_Lot_Expiry']].drop_duplicates()
+    parts = []
+    for _, row in pairs.iterrows():
+        lot = row['Control_Lot']
+        expiry = row['Control_Lot_Expiry']
+        if pd.notna(expiry):
+            parts.append(f"{lot} (exp {expiry.strftime('%d/%m/%Y')})")
+        else:
+            parts.append(f"{lot} (exp n/a)")
+    return 'Lot: ' + ', '.join(parts)
+
+
+def _compute_group_summary(gdf: pd.DataFrame) -> str:
+    """
+    Build the "N=... Mean=... SD=... CV%=..." summary line shown as a
+    second line in each chart's title, blending all of a group's segments
+    together (as opposed to the per-segment Mean/SD already shown as
+    colored reference lines on the chart).
+
+    Note: this is computed here in Python purely to render into the
+    chart title, which - unlike a worksheet cell - cannot hold a live
+    formula reference. The authoritative, recalculating values are the
+    Group_N/Group_Mean/Group_SD/Group_CV *formula* columns on the Data
+    sheet; this title text is a snapshot matching those formulas as of
+    generation time, not a live link to them.
+
+    Args:
+        gdf: The rows for a single (Assay, Control_Name, Control_Level)
+            group (a slice of the full prepared DataFrame).
+
+    Returns:
+        A one-line summary string, e.g. "N=42   Mean=118.22   SD=3.41   CV%=2.89%".
+    """
+    n = len(gdf)
+    mean = gdf['Result_Value'].mean()
+    sd = gdf['Result_Value'].std(ddof=1) if n >= 2 else None
+    cv = (sd / mean * 100) if (sd is not None and mean) else None
+
+    mean_str = f'{mean:.2f}' if pd.notna(mean) else 'n/a'
+    sd_str = f'{sd:.2f}' if sd is not None and pd.notna(sd) else 'n/a'
+    cv_str = f'{cv:.2f}%' if cv is not None and pd.notna(cv) else 'n/a'
+    return f'N={n}   Mean={mean_str}   SD={sd_str}   CV%={cv_str}'
 
 
 def _add_group_chart(
     charts_ws, data_ws, anchor_row: int, group_label: str,
     group_start: int, group_end: int, segments: List[Tuple[int, int, int, bool]],
-    y_min: float, y_max: float,
+    y_min: float, y_max: float, summary: str, lot_summary: str,
 ) -> int:
     """
     Build and place one Levey-Jennings chart for a single group.
@@ -424,7 +623,7 @@ def _add_group_chart(
             since that's what openpyxl uses to build each series' cell
             reference formula.
         anchor_row: Row on charts_ws to anchor this chart's top-left corner.
-        group_label: Chart title.
+        group_label: Chart title (first line).
         group_start, group_end: 1-indexed Data-sheet row range for this
             group's Result_Value/DateTime series (spans all segments).
         segments: List of (seg_start_row, seg_end_row, seg_n, range_ok)
@@ -433,18 +632,27 @@ def _add_group_chart(
             chart uses the vertical space available to it rather than a
             shared/default scale that leaves most of the chart empty for
             a group whose values cluster tightly.
+        summary: The "N=... Mean=... SD=... CV%=..." line shown as a
+            second title line (see _compute_group_summary).
+        lot_summary: The "Lot: ..." line shown as a third title line
+            (see _compute_lot_summary).
 
     Returns:
         The anchor row the *next* chart should use.
     """
     chart = ScatterChart()
-    chart.title = group_label
     chart.style = 2
     chart.x_axis.title = 'Date'
     chart.y_axis.title = 'Result'
     chart.x_axis.number_format = 'yyyy-mm-dd'
+    chart.y_axis.number_format = '0.00'
     chart.y_axis.scaling.min = y_min
     chart.y_axis.scaling.max = y_max
+    # Rotate date labels -45 degrees (60,000ths of a degree) and force a
+    # tick at every day rather than letting Excel/LibreOffice auto-skip
+    # labels on a dense axis.
+    chart.x_axis.txPr = RichText(bodyPr=RichTextProperties(rot=-2700000))
+    chart.x_axis.majorUnit = 1
     chart.height = 8
     chart.width = 24
 
@@ -457,6 +665,15 @@ def _add_group_chart(
     result_series.graphicalProperties.line.solidFill = '1F77B4'
     result_series.marker.graphicalProperties.solidFill = '1F77B4'
     chart.series.append(result_series)
+
+    # A group can have many segments (one per CONTROL RANGE change over the
+    # reporting period); without this, every segment would add its own
+    # "Mean"/"+1 SD"/etc. series, and the legend would grow one entry per
+    # segment instead of one entry per tier - the more segments a group
+    # has, the more the legend crowds out (or entirely replaces) the
+    # visible plot area. Keep only the first occurrence of each label.
+    legend_entries = []
+    seen_labels = set()
 
     for seg_start, seg_end, seg_n, range_ok in segments:
         seg_dates_ref = Reference(data_ws, min_col=COL['DateTime'], min_row=seg_start, max_row=seg_end)
@@ -477,7 +694,17 @@ def _add_group_chart(
                 s.marker.graphicalProperties.solidFill = color
                 s.marker.graphicalProperties.line.solidFill = color
                 s.graphicalProperties.line.noFill = True
+
+            series_idx = len(chart.series)
+            if label in seen_labels:
+                legend_entries.append(LegendEntry(idx=series_idx, delete=True))
+            else:
+                seen_labels.add(label)
             chart.series.append(s)
 
-    charts_ws.add_chart(chart, f'A{anchor_row}')
+    if legend_entries:
+        chart.legend.legendEntry = legend_entries
+
+    _write_chart_header(charts_ws, anchor_row, group_label, summary, lot_summary)
+    charts_ws.add_chart(chart, f'A{anchor_row + HEADER_ROWS_RESERVED}')
     return anchor_row + CHART_HEIGHT_ROWS
